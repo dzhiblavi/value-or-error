@@ -803,87 +803,50 @@ struct ValueConstructorImpl : public SetErrorImpl<ValueType, ErrorTypes...> {
 };
 
 template <typename ValueType, typename... ErrorTypes>
-struct CopyConstructorImpl : public ValueConstructorImpl<ValueType, ErrorTypes...> {
+struct ConstructorsImpl : public ValueConstructorImpl<ValueType, ErrorTypes...> {
   using Base = ValueConstructorImpl<ValueType, ErrorTypes...>;
 
-  void Construct(CopyConstructorImpl& from) {
+ protected:
+  template <typename From>
+  void Construct(From&& from) {
     if (from.IsEmpty()) {
       return;
     }
     Base::LogicalIndex() = from.LogicalIndex();
-    Base::template CopyConstructorArray<void>
+    Base
+      ::template ConstructorRefSelector<decltype(from), detail_::PropagateConst<From, void>>
       ::Call(from.Data(), Base::Data(), Base::PhysicalIndex());
   }
 
-  void Construct(const CopyConstructorImpl& from) {
-    if (from.IsEmpty()) {
-      return;
-    }
-    Base::LogicalIndex() = from.LogicalIndex();
-    Base::template CopyConstructorArray<const void>
-      ::Call(from.Data(), Base::Data(), Base::PhysicalIndex());
-  }
-};
-
-template <typename ValueType, typename... ErrorTypes>
-struct MoveConstructorImpl : public CopyConstructorImpl<ValueType, ErrorTypes...> {
-  using Base = CopyConstructorImpl<ValueType, ErrorTypes...>;
-
-  void MoveConstruct(MoveConstructorImpl&& from) {
-    if (from.IsEmpty()) {
-      return;
-    }
-    Base::LogicalIndex() = from.LogicalIndex();
-    Base::template MoveConstructorArray<void>
-      ::Call(from.Data(), Base::Data(), Base::PhysicalIndex());
-  }
-
-  void MoveConstruct(const MoveConstructorImpl&& from) {
-    if (from.IsEmpty()) {
-      return;
-    }
-    Base::LogicalIndex() = from.LogicalIndex();
-    Base::template MoveConstructorArray<const void>
-      ::Call(from.Data(), Base::Data(), Base::PhysicalIndex());
-  }
-};
-
-template <typename ValueType, typename... ErrorTypes>
-struct ConvertConstructorImpl : public MoveConstructorImpl<ValueType, ErrorTypes...> {
-  using Base = MoveConstructorImpl<ValueType, ErrorTypes...>;
-
-  template <typename FromVoe, typename FromValueType, typename... FromErrorTypes>
+  template <typename From, typename FromValueType, typename... FromErrorTypes>
   void ConvertConstruct(
-      FromVoe&& from,
-      ConvertConstructorImpl<FromValueType, FromErrorTypes...>*)
+      From&& from,
+      ConstructorsImpl<FromValueType, FromErrorTypes...>*)
   {
     if (from.IsEmpty()) {
       return;
     }
-
-    using FromType = ConvertConstructorImpl<FromValueType, FromErrorTypes...>;
+    using FromType = ConstructorsImpl<FromValueType, FromErrorTypes...>;
     using PhysicalIndexMapping =
       typename IndexMapping<typename FromType::StoredTypes>
       ::template MapTo<typename Base::StoredTypes>;
 
     const size_t this_phys_index = PhysicalIndexMapping::indices[from.PhysicalIndex()];
-
     assert(
         this_phys_index != size_t(-1) &&
         "Conversion constructor from ValueOrError<X, ...> to ValueOrError<void, ...>"
         " is trying to drop a value");
 
     FromType
-      ::template ConstructorRefSelector<decltype(from), detail_::PropagateConst<FromVoe, void>>
+      ::template ConstructorRefSelector<decltype(from), detail_::PropagateConst<From, void>>
       ::Call(from.Data(), Base::Data(), from.PhysicalIndex());
-
     Base::LogicalIndex() = Base::PhysicalToLogicalIndex(this_phys_index);
   }
 };
 
 template <typename ValueType, typename... ErrorTypes>
-struct AssignImpl : public ConvertConstructorImpl<ValueType, ErrorTypes...> {
-  using Base = ConvertConstructorImpl<ValueType, ErrorTypes...>;
+struct AssignmentsImpl : public ConstructorsImpl<ValueType, ErrorTypes...> {
+  using Base = ConstructorsImpl<ValueType, ErrorTypes...>;
 
   template <typename Assignee>
     requires std::is_same_v<std::decay_t<Assignee>, ValueOrError<ValueType, ErrorTypes...>>
@@ -917,7 +880,6 @@ struct AssignImpl : public ConvertConstructorImpl<ValueType, ErrorTypes...> {
       Base::Clear();
       return;
     }
-
     using RhsType = ValueOrError<FromValueType, FromErrorTypes...>;
     using PhysicalIndexMapping =
         typename IndexMapping<typename RhsType::StoredTypes>
@@ -944,8 +906,8 @@ struct AssignImpl : public ConvertConstructorImpl<ValueType, ErrorTypes...> {
 };
 
 template <typename ValueType, typename... ErrorTypes>
-struct DiscardErrorImpl : public AssignImpl<ValueType, ErrorTypes...> {
-  using Base = AssignImpl<ValueType, ErrorTypes...>;
+struct DiscardErrorImpl : public AssignmentsImpl<ValueType, ErrorTypes...> {
+  using Base = AssignmentsImpl<ValueType, ErrorTypes...>;
 
   template <typename... DiscardedErrors>
   using ResultType = TransferTemplate<
@@ -1162,6 +1124,11 @@ class [[nodiscard]] ValueOrError
     noexcept(std::is_nothrow_copy_constructible_v<ValueType>)
   { Base::ValueConstruct(std::forward<FromType>(from)); }
 
+  ValueOrError(ValueOrError& voe) { Base::Construct(voe); }
+  ValueOrError(const ValueOrError& voe) { Base::Construct(voe); }
+  ValueOrError(ValueOrError&& voe) { Base::Construct(std::move(voe)); }
+  ValueOrError(const ValueOrError&& voe) { Base::Construct(std::move(voe)); }
+
   /**
    * @brief ValueOrError conversion constructor
    *
@@ -1188,6 +1155,11 @@ class [[nodiscard]] ValueOrError
         std::forward<FromVoe>(from), static_cast<std::decay_t<FromVoe>*>(nullptr));
   }
 
+  SelfType& operator=(ValueOrError& arg) & { Base::Assign(arg); return *this; }
+  SelfType& operator=(const ValueOrError& arg) & { Base::Assign(arg); return *this; }
+  SelfType& operator=(ValueOrError&& arg) & { Base::Assign(std::move(arg)); return *this; }
+  SelfType& operator=(const ValueOrError&& arg) & { Base::Assign(std::move(arg)); return *this; }
+
   /**
    * @brief ValueOrError conversion assignment operator
    *
@@ -1211,16 +1183,6 @@ class [[nodiscard]] ValueOrError
     Base::ConvertAssign(std::forward<FromVoe>(rhs), static_cast<std::decay_t<FromVoe>*>(nullptr));
     return *this;
   }
-
-  ValueOrError(ValueOrError& voe) { Base::Construct(voe); }
-  ValueOrError(const ValueOrError& voe) { Base::Construct(voe); }
-  ValueOrError(ValueOrError&& voe) { Base::MoveConstruct(std::move(voe)); }
-  ValueOrError(const ValueOrError&& voe) { Base::MoveConstruct(std::move(voe)); }
-
-  SelfType& operator=(ValueOrError& arg) & { Base::Assign(arg); return *this; }
-  SelfType& operator=(const ValueOrError& arg) & { Base::Assign(arg); return *this; }
-  SelfType& operator=(ValueOrError&& arg) & { Base::Assign(std::move(arg)); return *this; }
-  SelfType& operator=(const ValueOrError&& arg) & { Base::Assign(std::move(arg)); return *this; }
 
  protected:
   template <typename, typename...>
