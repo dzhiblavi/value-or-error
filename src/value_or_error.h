@@ -887,10 +887,12 @@ struct AssignmentsImpl : public ConstructorsImpl<ValueType, ErrorTypes...> {
 
     const size_t rhs_phys_index = rhs.PhysicalIndex();
     const size_t this_phys_index = PhysicalIndexMapping::indices[rhs_phys_index];
-    assert(this_phys_index != size_t(-1));
-    const size_t this_new_logical_index = Base::PhysicalToLogicalIndex(this_phys_index);
+    assert(
+        this_phys_index != size_t(-1) &&
+        "Conversion assignment of ValueOrError<X, ...> to ValueOrError<void, ...>"
+        " is trying to drop a value");
 
-    if (Base::LogicalIndex() == this_new_logical_index) {
+    if (Base::PhysicalIndex() == this_phys_index) {
       RhsType
         ::template AssignmentRefSelector<decltype(rhs), detail_::PropagateConst<Convert, void>>
         ::Call(rhs.Data(), Base::Data(), rhs_phys_index);
@@ -898,7 +900,7 @@ struct AssignmentsImpl : public ConstructorsImpl<ValueType, ErrorTypes...> {
     }
 
     Base::Clear();
-    Base::LogicalIndex() = this_new_logical_index;
+    Base::LogicalIndex() = Base::PhysicalToLogicalIndex(this_phys_index);
     RhsType
       ::template ConstructorRefSelector<decltype(rhs), detail_::PropagateConst<Convert, void>>
       ::Call(rhs.Data(), Base::Data(), rhs_phys_index);
