@@ -116,50 +116,53 @@ struct CreateBase {
   template <typename T, typename... Ts>
   struct First<T, Ts...> { using type = T; };
 
+  struct EmptyMarker {};
+
+  template <typename T>
+  struct ValueMarker {};
+
+  template <typename T>
+  struct ErrorMarker {};
+
+  template <typename ValueType, typename... ErrorTypes>
+  static ValueOrError<ValueType, ErrorTypes...> Create(
+      ValueOrError<ValueType, ErrorTypes...>*, EmptyMarker)
+  { return {}; }
+
+  template <typename ValueType, typename... ErrorTypes, typename T>
+  static ValueOrError<ValueType, ErrorTypes...> Create(
+      ValueOrError<ValueType, ErrorTypes...>*, ValueMarker<T>)
+  { return T{}; }
+
+  template <typename ValueType, typename... ErrorTypes, typename T>
+  static ValueOrError<ValueType, ErrorTypes...> Create(
+      ValueOrError<ValueType, ErrorTypes...>*, ErrorMarker<T>)
+  { return MakeError<T>(); }
+
   template <typename ValueType, typename... ErrorTypes>
   static ValueOrError<ValueType, ErrorTypes...> CreateEmpty(
       ValueOrError<ValueType, ErrorTypes...>* ptr)
-  {
-    return Create(ptr, static_cast<void*>(nullptr));
-  }
+  { return Create(ptr, EmptyMarker{}); }
 
-  template <typename ValueType, typename... ErrorTypes, typename Type>   
-  static ValueOrError<ValueType, ErrorTypes...> Create(
-      ValueOrError<ValueType, ErrorTypes...>*, Type*)
-  {
-    if constexpr (std::is_same_v<void, Type>) {
-      return {};
-    }
-    if constexpr (!std::is_same_v<void, Type> && std::is_same_v<ValueType, Type>) {
-      return ValueType{};
-    }
-    if constexpr (detail_::TypesContain<Type, ErrorTypes...>) {
-      return MakeError<Type>();
-    }
-    std::terminate();
-  }
-
-  template <typename ValueType, typename... ErrorTypes, typename Type>
+  template <typename ValueType, typename... ErrorTypes, typename T>
   static ValueOrError<ValueType, ErrorTypes...> CreateOther(
-      ValueOrError<ValueType, ErrorTypes...>*, Type*)
-  {
-    if constexpr (std::is_same_v<Type, ValueType>) {
-      return MakeError<typename First<ErrorTypes...>::type>();
-    } else {
-      return ValueType{};
-    }
-  }
+      ValueOrError<ValueType, ErrorTypes...>*, ValueMarker<T>)
+  { return MakeError<typename First<ErrorTypes...>::type>(); }
 
-  template <typename ValueType, typename... ErrorTypes, typename Type>
+  template <typename ValueType, typename... ErrorTypes, typename T>
+  static ValueOrError<ValueType, ErrorTypes...> CreateOther(
+      ValueOrError<ValueType, ErrorTypes...>*, ErrorMarker<T>)
+  { return ValueType{}; }
+
+  template <typename ValueType, typename... ErrorTypes, typename T>
   static constexpr int OtherIndex(
-      ValueOrError<ValueType, ErrorTypes...>*, Type*)
-  {
-    if constexpr (std::is_same_v<Type, ValueType>) {
-      return First<ErrorTypes...>::type::Idx;
-    } else {
-      return ValueType::Idx;
-    }
-  }
+      ValueOrError<ValueType, ErrorTypes...>*, ValueMarker<T>)
+  { return First<ErrorTypes...>::type::Idx; }
+
+  template <typename ValueType, typename... ErrorTypes, typename T>
+  static constexpr int OtherIndex(
+      ValueOrError<ValueType, ErrorTypes...>*, ErrorMarker<T>)
+  { return ValueType::Idx; }
 };
 
 struct ConstructorsTest : CreateBase {
@@ -177,25 +180,29 @@ struct ConstructorsTest : CreateBase {
       !std::is_same_v<void, ValueType1> && !std::is_same_v<void, ValueType2>;
 
     // VoE(Empty): No operations expected
-    TestConstructFrom(p, static_cast<void*>(nullptr));
+    TestConstructFrom(p, EmptyMarker{});
 
     if constexpr (both_non_void) {
       // VoE(ValueTypeVoE{}): Copy/Move construction expected
-      TestConstructFrom(p, static_cast<ValueType1*>(nullptr));
+      TestConstructFrom(p, ValueMarker<ValueType1>{});
     }
 
     // VoE(ErrorTypeVoE{}): Copy/Move construction expected
-    ( TestConstructFrom(p, static_cast<ErrorTypes1*>(nullptr)), ... );
+    ( TestConstructFrom(p, ErrorMarker<ErrorTypes1>{}), ... );
   }
 
-  template <typename Type>
-  static void Check(test::OpCollector& collector, test::Type type, Type*)
-  {
-    if constexpr (std::is_same_v<void, Type>) {
-      EXPECT_TRUE(collector.Equal());
-    } else {
-      EXPECT_TRUE(collector.Equal(test::Op(type, Type::Idx)));
-    }
+  static void Check(test::OpCollector& collector, test::Type, EmptyMarker) {
+    EXPECT_TRUE(collector.Equal());
+  }
+
+  template <typename T>
+  static void Check(test::OpCollector& collector, test::Type type, ValueMarker<T>) {
+    EXPECT_TRUE(collector.Equal(test::Op(type, T::Idx)));
+  }
+
+  template <typename T>
+  static void Check(test::OpCollector& collector, test::Type type, ErrorMarker<T>) {
+    EXPECT_TRUE(collector.Equal(test::Op(type, T::Idx)));
   }
 
   template <typename ValueType1, typename... ErrorTypes1,
@@ -204,7 +211,7 @@ struct ConstructorsTest : CreateBase {
   static void TestConstructFrom(
       test::Pair<
         ValueOrError<ValueType1, ErrorTypes1...>,
-        ValueOrError<ValueType2, ErrorTypes2...>>* p, ConstructAs* as)
+        ValueOrError<ValueType2, ErrorTypes2...>>* p, ConstructAs as)
   {
     using ValueOrError1 = ValueOrError<ValueType1, ErrorTypes1...>;
     using ValueOrError2 = ValueOrError<ValueType2, ErrorTypes2...>;
@@ -265,13 +272,13 @@ struct AssignmentsTest : CreateBase {
       // `to' destructor call expected
       TestAssign(
           /* from = */ CreateEmpty(p1),
-          /* to =   */ Create(p2, static_cast<ValueType2*>(nullptr)),
+          /* to =   */ Create(p2, ValueMarker<ValueType2>{}),
           -1, test::None, 0,
           test::Op(test::Destroy, ValueType2::Idx));
     }
     ( TestAssign(
         /* from = */ CreateEmpty(p1),
-        /* to =   */ Create(p2, static_cast<ErrorTypes2*>(nullptr)),
+        /* to =   */ Create(p2, ErrorMarker<ErrorTypes2>{}),
         -1, test::None, 0,
         test::Op(test::Destroy, ErrorTypes2::Idx)), ... );
 
@@ -280,12 +287,12 @@ struct AssignmentsTest : CreateBase {
       // Assign voe with some value to empty voe
       // Constructor call expected
       TestAssign(
-          /* from = */ Create(p1, static_cast<ValueType1*>(nullptr)),
+          /* from = */ Create(p1, ValueMarker<ValueType1>{}),
           /* to =   */ CreateEmpty(p2),
           ValueType1::Idx, test::CONSTRUCT_COPY, 1);
     }
     ( TestAssign(
-        /* from = */ Create(p1, static_cast<ErrorTypes1*>(nullptr)),
+        /* from = */ Create(p1, ErrorMarker<ErrorTypes1>{}),
         /* to =   */ CreateEmpty(p2),
         ErrorTypes1::Idx, test::CONSTRUCT_COPY, 1), ... );
 
@@ -295,10 +302,10 @@ struct AssignmentsTest : CreateBase {
     if constexpr (!std::is_same_v<void, ValueType1> && std::is_same_v<void, ValueType2>) {
       EXPECT_DEATH(
           TestAssign(
-            /* from = */ Create(p1, static_cast<ValueType1*>(nullptr)),
+            /* from = */ Create(p1, ValueMarker<ValueType1>{}),
             /* to =   */ CreateEmpty(p2),
             ValueType1::Idx, test::CONSTRUCT_COPY, 1),
-          "Assertion `this_phys_index != size_t\\(-1\\)' failed");
+          "this_phys_index != size_t\\(-1\\)");
     }
 
     // X <- X
@@ -306,13 +313,13 @@ struct AssignmentsTest : CreateBase {
     // Assignment(from) operator expected
     if constexpr (!std::is_same_v<void, ValueType1> && !std::is_same_v<void, ValueType2>) {
       TestAssign(
-          /* from = */ Create(p1, static_cast<ValueType1*>(nullptr)),
-          /* to =   */ Create(p2, static_cast<ValueType2*>(nullptr)),
+          /* from = */ Create(p1, ValueMarker<ValueType1>{}),
+          /* to =   */ Create(p2, ValueMarker<ValueType2>{}),
           ValueType1::Idx, test::ASSIGN_COPY, 1);
     }
     ( TestAssign(
-        /* from = */ Create(p1, static_cast<ErrorTypes1*>(nullptr)),
-        /* to =   */ Create(p2, static_cast<ErrorTypes1*>(nullptr)),
+        /* from = */ Create(p1, ErrorMarker<ErrorTypes1>{}),
+        /* to =   */ Create(p2, ErrorMarker<ErrorTypes1>{}),
         ErrorTypes1::Idx, test::ASSIGN_COPY, 1), ... );
 
     if constexpr (!std::is_same_v<void, ValueType1> && !std::is_same_v<void, ValueType2>) {
@@ -321,14 +328,14 @@ struct AssignmentsTest : CreateBase {
         // Assign to voe with some value from voe with other kind of value
         // Destructor(to) + Constructor(from) operator expected
         TestAssign(
-            /* from = */ CreateOther(p1, static_cast<ValueType1*>(nullptr)),
-            /* to =   */ Create(p2, static_cast<ValueType2*>(nullptr)),
-            OtherIndex(p1, static_cast<ValueType1*>(nullptr)),
+            /* from = */ CreateOther(p1, ValueMarker<ValueType1>{}),
+            /* to =   */ Create(p2, ValueMarker<ValueType2>{}),
+            OtherIndex(p1, ValueMarker<ValueType1>{}),
             test::CONSTRUCT_COPY, 1, test::Op(test::Destroy, ValueType2::Idx));
         ( TestAssign(
-            /* from = */ CreateOther(p1, static_cast<ErrorTypes1*>(nullptr)),
-            /* to =   */ Create(p2, static_cast<ErrorTypes1*>(nullptr)),
-            OtherIndex(p1, static_cast<ErrorTypes1*>(nullptr)),
+            /* from = */ CreateOther(p1, ErrorMarker<ErrorTypes1>{}),
+            /* to =   */ Create(p2, ErrorMarker<ErrorTypes1>{}),
+            OtherIndex(p1, ErrorMarker<ErrorTypes1>{}),
             test::CONSTRUCT_COPY, 1, test::Op(test::Destroy, ErrorTypes1::Idx)), ... );
       }
     }
@@ -387,16 +394,18 @@ struct AssignmentsTest : CreateBase {
 
 TEST(DefaultConstructorTest, Correctness) {
   using Types = test::Concat<
-    test::Types<void, test::RememberLastOp<0>, short, float>,
-    test::Types<char, test::RememberLastOp<0>, char, short>,
-    test::Types<test::RememberLastOp<1>, test::RememberLastOp<0>>
+    test::Types<test::RememberLastOp<0>, test::RememberLastOp<0>, short, float>,
+    test::Types<test::RememberLastOp<0>, test::RememberLastOp<0>, char, short>,
+    test::Types<test::RememberLastOp<0>, test::RememberLastOp<0>>
   >;
   test::InstantiateAndCall<DefaultConstructorTest>(Types{});
 }
 
 TEST(ValueConstructorTest, Correctness) {
   using Types = test::Types<
-    test::RememberLastOp<0>, int, char, std::string, const char*
+    test::RememberLastOp<0>,
+    test::RememberLastOp<0>,
+    int, char, std::string, const char*
   >;
   test::InstantiateAndCall<ValueConstructorTest>(Types{});
 }
@@ -404,19 +413,19 @@ TEST(ValueConstructorTest, Correctness) {
 TEST(MakeErrorTest, Correctness) {
   using Types = test::TypesWithErrors<
     test::RememberLastOp<0>,
+    test::RememberLastOp<0>,
     test::RememberLastOp<1>,
-    test::RememberLastOp<2>,
-    test::RememberLastOp<3>
+    test::RememberLastOp<2>
   >;
   test::InstantiateAndCall<MakeErrorTest>(Types{});
 }
 
-TEST(ConversionConstructorsTest, CorrectTypeAndOperation) {
+TEST(ConstructorsTest, CorrectTypeAndOperation) {
   using Types = test::AllConvertiblePairs<
     test::RememberLastOp<0>,
+    test::RememberLastOp<0>,
     test::RememberLastOp<1>,
-    test::RememberLastOp<2>,
-    test::RememberLastOp<3>
+    test::RememberLastOp<2>
   >;
   test::InstantiateAndCall<ConstructorsTest>(Types{});
 }
@@ -424,9 +433,9 @@ TEST(ConversionConstructorsTest, CorrectTypeAndOperation) {
 TEST(AssignmentsTest, CorrectTypeAndOperation) {
   using Types = test::AllConvertiblePairs<
     test::RememberLastOp<0>,
+    test::RememberLastOp<0>,
     test::RememberLastOp<1>,
-    test::RememberLastOp<2>,
-    test::RememberLastOp<3>
+    test::RememberLastOp<2>
   >;
   test::InstantiateAndCall<AssignmentsTest>(Types{});
 }

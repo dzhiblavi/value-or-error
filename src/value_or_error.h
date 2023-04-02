@@ -459,8 +459,6 @@ struct VariantStorage {
   static constexpr size_t StorageSize = std::max({0ul, sizeof(Types)...});
 
   alignas(Types...) std::byte data[StorageSize];
-
-  // 1 is for storing 'empty' (or 'void') state
   MinimalSizedIndexType<1 + sizeof...(Types)> index{0};
 };
 
@@ -469,6 +467,7 @@ struct ValueTypeWrapper {};
 
 template <typename... Stored>
 struct TraitsBase : public VariantStorage<Stored...> {
+ public:
   using StorageType = VariantStorage<Stored...>;
   using DestructorArray = DestructorFunctorArray<Stored...>;
 
@@ -507,6 +506,10 @@ struct TraitsBase : public VariantStorage<Stored...> {
   constexpr bool IsEmpty() const noexcept {
     return LogicalIndex() == LogicalEmptyIndex();
   }
+
+ private:
+  using StorageType::index;
+  using StorageType::data;
 };
 
 template <typename... Types>
@@ -981,7 +984,7 @@ struct DiscardErrorImpl : public AssignImpl<ValueType, ErrorTypes...> {
       ::Call(Base::Data(), result.Data(), Base::PhysicalIndex());
     Base::Clear();
 
-    result.index = ResultType::PhysicalToLogicalIndex(result_phys_index);
+    result.LogicalIndex() = ResultType::PhysicalToLogicalIndex(result_phys_index);
     return result;
   }
 };
